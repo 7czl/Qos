@@ -106,18 +106,22 @@ fn test_partial_json_returns_error() {
 fn test_unknown_command_returns_error() {
     let resp = parse_and_validate_request(r#"{"command": "restart"}"#).unwrap_err();
     assert_eq!(resp.status, "error");
-    assert!(
-        resp.message.as_ref().unwrap().contains("unknown command: restart"),
-    );
+    assert!(resp
+        .message
+        .as_ref()
+        .unwrap()
+        .contains("unknown command: restart"),);
 }
 
 #[test]
 fn test_missing_command_field_returns_error() {
     let resp = parse_and_validate_request(r#"{"ip": "10.0.0.0/8"}"#).unwrap_err();
     assert_eq!(resp.status, "error");
-    assert!(
-        resp.message.as_ref().unwrap().contains("unknown command: <missing>"),
-    );
+    assert!(resp
+        .message
+        .as_ref()
+        .unwrap()
+        .contains("unknown command: <missing>"),);
 }
 
 // --- rate/burst == 0 validation tests ---
@@ -129,12 +133,11 @@ fn test_add_rate_zero_returns_error() {
     )
     .unwrap_err();
     assert_eq!(resp.status, "error");
-    assert!(
-        resp.message
-            .as_ref()
-            .unwrap()
-            .contains("rate and burst must be positive"),
-    );
+    assert!(resp
+        .message
+        .as_ref()
+        .unwrap()
+        .contains("rate and burst must be positive"),);
 }
 
 #[test]
@@ -144,12 +147,11 @@ fn test_add_burst_zero_returns_error() {
     )
     .unwrap_err();
     assert_eq!(resp.status, "error");
-    assert!(
-        resp.message
-            .as_ref()
-            .unwrap()
-            .contains("rate and burst must be positive"),
-    );
+    assert!(resp
+        .message
+        .as_ref()
+        .unwrap()
+        .contains("rate and burst must be positive"),);
 }
 
 #[test]
@@ -159,12 +161,11 @@ fn test_add_both_zero_returns_error() {
     )
     .unwrap_err();
     assert_eq!(resp.status, "error");
-    assert!(
-        resp.message
-            .as_ref()
-            .unwrap()
-            .contains("rate and burst must be positive"),
-    );
+    assert!(resp
+        .message
+        .as_ref()
+        .unwrap()
+        .contains("rate and burst must be positive"),);
 }
 
 // --- Valid command parsing tests ---
@@ -187,8 +188,7 @@ fn test_valid_add_command() {
 
 #[test]
 fn test_valid_delete_command() {
-    let req =
-        parse_and_validate_request(r#"{"command": "delete", "ip": "10.0.0.1"}"#).unwrap();
+    let req = parse_and_validate_request(r#"{"command": "delete", "ip": "10.0.0.1"}"#).unwrap();
     assert_eq!(
         req,
         Request::Delete {
@@ -213,8 +213,7 @@ fn test_error_response_has_no_data() {
 
 #[test]
 fn test_add_missing_fields_returns_error() {
-    let resp =
-        parse_and_validate_request(r#"{"command": "add", "ip": "10.0.0.0/8"}"#).unwrap_err();
+    let resp = parse_and_validate_request(r#"{"command": "add", "ip": "10.0.0.0/8"}"#).unwrap_err();
     assert_eq!(resp.status, "error");
     assert!(resp.message.is_some());
 }

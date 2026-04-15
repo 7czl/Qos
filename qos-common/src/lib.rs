@@ -97,11 +97,19 @@ impl TokenBucketState {
         // (which may also emit 128-bit ops on some targets).
         let new_tokens = {
             let (sum, overflow) = tokens_from_secs.overflowing_add(tokens_from_frac);
-            if overflow { u64::MAX } else { sum }
+            if overflow {
+                u64::MAX
+            } else {
+                sum
+            }
         };
         self.tokens = {
             let (sum, overflow) = self.tokens.overflowing_add(new_tokens);
-            if overflow { u64::MAX } else { sum }
+            if overflow {
+                u64::MAX
+            } else {
+                sum
+            }
         };
         // Cap at burst.
         if self.tokens > config.burst {
