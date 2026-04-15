@@ -61,15 +61,39 @@ impl TokenBucketState {
         let elapsed_secs = elapsed_ns / NANOS_PER_SEC;
         let remaining_ns = elapsed_ns % NANOS_PER_SEC;
 
-        // tokens from full seconds (saturating to avoid overflow)
-        let tokens_from_secs = elapsed_secs.saturating_mul(config.rate);
-        // tokens from the remaining sub-second fraction
-        // remaining_ns < 1e9 and config.rate fits in u64, so this product
-        // can overflow for very large rates. Use saturating mul then divide.
-        let tokens_from_frac = remaining_ns.saturating_mul(config.rate) / NANOS_PER_SEC;
+        // tokens from full seconds.
+        // Avoid saturating_mul — it emits __multi3 (128-bit) which eBPF
+        // does not support. Instead, cap elapsed_secs so the product
+        // cannot overflow u64 (burst acts as the upper bound anyway).
+        let tokens_from_secs = if config.rate == 0 {
+            0
+        } else if elapsed_secs > u64::MAX / config.rate {
+            u64::MAX // will be capped at burst below
+        } else {
+            elapsed_secs.wrapping_mul(config.rate)
+        };
 
-        let new_tokens = tokens_from_secs.saturating_add(tokens_from_frac);
-        self.tokens = self.tokens.saturating_add(new_tokens);
+        // tokens from the remaining sub-second fraction.
+        // remaining_ns < 1e9, so remaining_ns * rate can only overflow
+        // when rate > ~1.8e10. Use the same guard pattern.
+        let tokens_from_frac = if config.rate == 0 {
+            0
+        } else if remaining_ns > u64::MAX / config.rate {
+            u64::MAX / NANOS_PER_SEC
+        } else {
+            remaining_ns.wrapping_mul(config.rate) / NANOS_PER_SEC
+        };
+
+        // Sum new tokens, guarding overflow without saturating_add
+        // (which may also emit 128-bit ops on some targets).
+        let new_tokens = {
+            let (sum, overflow) = tokens_from_secs.overflowing_add(tokens_from_frac);
+            if overflow { u64::MAX } else { sum }
+        };
+        self.tokens = {
+            let (sum, overflow) = self.tokens.overflowing_add(new_tokens);
+            if overflow { u64::MAX } else { sum }
+        };
         // Cap at burst.
         if self.tokens > config.burst {
             self.tokens = config.burst;
@@ -190,15 +214,29 @@ mod tests {
             let expected_total = (current_tokens as u128).saturating_add(expected_new_tokens);
             let expected = core::cmp::min(expected_total, burst as u128) as u64;
 
-            // The implementation uses a split approach with saturating_mul which can
-            // lose precision when remaining_ns * rate overflows u64. Compute the
-            // implementation's expected result using the same split logic.
+            // The implementation uses a split approach with overflow-guarded
+            // multiplication (no saturating_mul to avoid __multi3 in eBPF).
+            // Compute the implementation's expected result using the same logic.
             let elapsed_secs = elapsed_ns / NANOS_PER_SEC;
             let remaining_ns = elapsed_ns % NANOS_PER_SEC;
-            let tokens_from_secs = elapsed_secs.saturating_mul(rate);
-            let tokens_from_frac = remaining_ns.saturating_mul(rate) / NANOS_PER_SEC;
-            let impl_new_tokens = tokens_from_secs.saturating_add(tokens_from_frac);
-            let impl_total = current_tokens.saturating_add(impl_new_tokens);
+            let tokens_from_secs = if rate == 0 {
+                0
+            } else if elapsed_secs > u64::MAX / rate {
+                u64::MAX
+            } else {
+                elapsed_secs.wrapping_mul(rate)
+            };
+            let tokens_from_frac = if rate == 0 {
+                0
+            } else if remaining_ns > u64::MAX / rate {
+                u64::MAX / NANOS_PER_SEC
+            } else {
+                remaining_ns.wrapping_mul(rate) / NANOS_PER_SEC
+            };
+            let (impl_new_tokens, ov1) = tokens_from_secs.overflowing_add(tokens_from_frac);
+            let impl_new_tokens = if ov1 { u64::MAX } else { impl_new_tokens };
+            let (impl_total, ov2) = current_tokens.overflowing_add(impl_new_tokens);
+            let impl_total = if ov2 { u64::MAX } else { impl_total };
             let impl_expected = core::cmp::min(impl_total, burst);
 
             // The actual result must match the implementation's expected result
