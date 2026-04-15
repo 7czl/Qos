@@ -22,4 +22,4 @@ qos-common = { path = "../qos-common" }
 proptest = "1"
 
 [build-dependencies]
-aya-build = "0.1"
+aya-build = "0.1.3"

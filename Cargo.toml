@@ -1,3 +1,4 @@
 [workspace]
-members = ["qos-common", "qos"]
+members = ["qos-common", "qos", "qos-ebpf"]
+default-members = ["qos-common", "qos"]
 resolver = "2"
