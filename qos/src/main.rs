@@ -39,7 +39,7 @@ async fn main() -> anyhow::Result<()> {
     // Load eBPF bytecode (compiled by aya-build and written to OUT_DIR)
     let mut bpf = Ebpf::load(aya::include_bytes_aligned!(concat!(
         env!("OUT_DIR"),
-        "/qos-ebpf"
+        "/qos-ebpf-prog"
     )))
     .context("failed to load eBPF program — are you running as root?")?;
 
