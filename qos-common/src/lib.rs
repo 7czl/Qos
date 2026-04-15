@@ -8,6 +8,15 @@ pub const TC_ACT_SHOT: i32 = 2;
 /// One second in nanoseconds.
 const NANOS_PER_SEC: u64 = 1_000_000_000;
 
+// When the "user" feature is enabled (userspace crate), implement aya::Pod
+// for our #[repr(C)] types so they can be used with aya BPF maps.
+#[cfg(feature = "user")]
+unsafe impl aya::Pod for LpmKeyV4 {}
+#[cfg(feature = "user")]
+unsafe impl aya::Pod for RateLimitConfig {}
+#[cfg(feature = "user")]
+unsafe impl aya::Pod for TokenBucketState {}
+
 /// LPM Trie key for IPv4 addresses.
 ///
 /// Used as the key type for the BPF LPM Trie map that stores rate-limit rules.

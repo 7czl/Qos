@@ -5,8 +5,10 @@ edition = "2021"
 
 [features]
 default = []
+user = ["aya"]
 
 [dependencies]
+aya = { version = "0.13", optional = true }
 
 [dev-dependencies]
 proptest = "1"

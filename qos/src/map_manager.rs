@@ -1,15 +1,10 @@
 use anyhow::{anyhow, Context, Result};
 use aya::maps::lpm_trie::{Key, LpmTrie};
 use aya::maps::MapData;
-use aya::Pod;
 use qos_common::RateLimitConfig;
 
 use crate::protocol::{format_cidr, parse_cidr, RuleInfo};
 use qos_common::LpmKeyV4;
-
-// SAFETY: RateLimitConfig is #[repr(C)] with only u64 fields, no padding,
-// no pointers — safe to interpret as plain bytes.
-unsafe impl Pod for RateLimitConfig {}
 
 /// Manages BPF Map operations for rate-limit rules.
 pub struct MapManager {
@@ -66,7 +61,7 @@ impl MapManager {
             let (key, config) = result.context("failed to read rule from map")?;
             let lpm_key = LpmKeyV4 {
                 prefix_len: key.prefix_len(),
-                addr: *key.data(),
+                addr: key.data(),
             };
             rules.push(RuleInfo {
                 ip: format_cidr(&lpm_key),
