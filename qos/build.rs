@@ -1,7 +1,7 @@
 fn main() {
     let package = aya_build::Package {
         name: "qos-ebpf",
-        root_dir: "../qos-ebpf",
+        root_dir: concat!(env!("CARGO_MANIFEST_DIR"), "/../qos-ebpf"),
         no_default_features: false,
         features: &[],
     };
