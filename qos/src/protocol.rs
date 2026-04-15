@@ -366,10 +366,11 @@ mod tests {
             };
 
             let data = if has_data {
-                Some(match data_val {
-                    Some(v) => serde_json::json!(v),
-                    None => serde_json::json!(null),
-                })
+                match data_val {
+                    Some(v) => Some(serde_json::json!(v)),
+                    // Skip Value::Null — it's ambiguous with None for Option<Value>
+                    None => None,
+                }
             } else {
                 None
             };
