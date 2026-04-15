@@ -1,15 +1,17 @@
 use anyhow::{anyhow, Context, Result};
 use aya::maps::lpm_trie::{Key, LpmTrie};
 use aya::maps::MapData;
+use aya::Pod;
 use qos_common::RateLimitConfig;
 
 use crate::protocol::{format_cidr, parse_cidr, RuleInfo};
 use qos_common::LpmKeyV4;
 
+// SAFETY: RateLimitConfig is #[repr(C)] with only u64 fields, no padding,
+// no pointers — safe to interpret as plain bytes.
+unsafe impl Pod for RateLimitConfig {}
+
 /// Manages BPF Map operations for rate-limit rules.
-///
-/// Wraps the aya LPM Trie map and provides high-level methods
-/// for adding, deleting, and listing rate-limit rules.
 pub struct MapManager {
     rules: LpmTrie<MapData, u32, RateLimitConfig>,
 }
@@ -24,9 +26,6 @@ impl MapManager {
     }
 
     /// Add a rate-limit rule for the given CIDR.
-    ///
-    /// Parses the CIDR string, constructs an LPM Trie key, and inserts
-    /// the rate/burst configuration into the map.
     pub fn add_rule(&mut self, cidr: &str, rate: u64, burst: u64) -> Result<()> {
         let lpm_key = parse_cidr(cidr)?;
         let key = Key::new(lpm_key.prefix_len, lpm_key.addr);
@@ -40,14 +39,10 @@ impl MapManager {
                 anyhow!("failed to insert rule: {}", e)
             }
         })?;
-
         Ok(())
     }
 
     /// Delete a rate-limit rule for the given CIDR.
-    ///
-    /// Parses the CIDR string and removes the corresponding entry
-    /// from the LPM Trie map.
     pub fn delete_rule(&mut self, cidr: &str) -> Result<()> {
         let lpm_key = parse_cidr(cidr)?;
         let key = Key::new(lpm_key.prefix_len, lpm_key.addr);
@@ -60,14 +55,10 @@ impl MapManager {
                 anyhow!("failed to delete rule: {}", e)
             }
         })?;
-
         Ok(())
     }
 
     /// List all rate-limit rules currently in the LPM Trie.
-    ///
-    /// Iterates over all entries and formats each key back into
-    /// a CIDR string along with its rate/burst configuration.
     pub fn list_rules(&self) -> Result<Vec<RuleInfo>> {
         let mut rules = Vec::new();
 

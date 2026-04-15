@@ -63,7 +63,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Get BPF map reference and create MapManager
     let rules_map = LpmTrie::try_from(
-        bpf.map_mut("RULES").context("RULES map not found in eBPF object")?,
+        bpf.take_map("RULES").context("RULES map not found in eBPF object")?,
     )?;
     let map_manager = Arc::new(Mutex::new(MapManager::new(rules_map)));
 
