@@ -14,11 +14,11 @@ use tokio::sync::Mutex;
 
 use map_manager::MapManager;
 
-/// eBPF download rate limiter (QoS).
+/// eBPF rate limiter (QoS) — supports both download (ingress) and upload (egress).
 #[derive(Parser, Debug)]
-#[command(name = "qos", about = "eBPF download rate limiter")]
+#[command(name = "qos", about = "eBPF rate limiter (download + upload)")]
 pub struct Opt {
-    /// Network interface to attach the eBPF program to.
+    /// Network interface to attach the eBPF programs to.
     #[arg(long)]
     iface: String,
 
@@ -36,38 +36,58 @@ async fn main() -> anyhow::Result<()> {
     info!("interface: {}", opt.iface);
     info!("socket path: {}", opt.socket_path);
 
-    // Load eBPF bytecode (compiled by aya-build and written to OUT_DIR)
+    // Load eBPF bytecode (compiled by aya-build into OUT_DIR).
     let mut bpf = Ebpf::load(aya::include_bytes_aligned!(concat!(
         env!("OUT_DIR"),
         "/qos-ebpf-prog"
     )))
     .context("failed to load eBPF program — are you running as root?")?;
 
-    // Add clsact qdisc to the interface (ignore if already exists)
+    // Add clsact qdisc to the interface (needed for both ingress and egress
+    // eBPF programs). Ignore "already exists" errors.
     if let Err(e) = tc::qdisc_add_clsact(&opt.iface) {
-        log::warn!("qdisc_add_clsact: {} (may already exist)", e);
+        log::debug!("qdisc_add_clsact: {} (already present, continuing)", e);
     }
 
-    // Attach TC ingress program
-    let program: &mut SchedClassifier = bpf
+    // Attach the ingress (download) classifier.
+    let ingress_prog: &mut SchedClassifier = bpf
         .program_mut("tc_ingress")
         .context("tc_ingress program not found in eBPF object")?
         .try_into()?;
-    program.load()?;
-    program
+    ingress_prog.load()?;
+    ingress_prog
         .attach(&opt.iface, TcAttachType::Ingress)
         .context(format!(
             "failed to attach TC ingress to '{}' — does the interface exist?",
             opt.iface
         ))?;
+    info!("attached tc_ingress (download limiter) to {}", opt.iface);
 
-    // Get BPF map reference and create MapManager
-    let rules_map = LpmTrie::try_from(
-        bpf.take_map("RULES").context("RULES map not found in eBPF object")?,
+    // Attach the egress (upload) classifier.
+    let egress_prog: &mut SchedClassifier = bpf
+        .program_mut("tc_egress")
+        .context("tc_egress program not found in eBPF object")?
+        .try_into()?;
+    egress_prog.load()?;
+    egress_prog
+        .attach(&opt.iface, TcAttachType::Egress)
+        .context(format!(
+            "failed to attach TC egress to '{}'",
+            opt.iface
+        ))?;
+    info!("attached tc_egress (upload limiter) to {}", opt.iface);
+
+    // Take both rules maps and hand them to the manager.
+    let rules_ingress = LpmTrie::try_from(
+        bpf.take_map("RULES_INGRESS")
+            .context("RULES_INGRESS map not found in eBPF object")?,
     )?;
-    let map_manager = Arc::new(Mutex::new(MapManager::new(rules_map)));
+    let rules_egress = LpmTrie::try_from(
+        bpf.take_map("RULES_EGRESS")
+            .context("RULES_EGRESS map not found in eBPF object")?,
+    )?;
+    let map_manager = Arc::new(Mutex::new(MapManager::new(rules_ingress, rules_egress)));
 
-    // Set up SIGTERM handler
     let mut sigterm =
         tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
 
@@ -75,7 +95,6 @@ async fn main() -> anyhow::Result<()> {
 
     info!("starting UDS server and waiting for connections");
 
-    // Run UDS server until a shutdown signal is received
     tokio::select! {
         result = uds::run_uds_server(&opt.socket_path, map_manager) => {
             if let Err(e) = result {
@@ -90,7 +109,6 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    // Cleanup: remove socket file
     if std::path::Path::new(&socket_path).exists() {
         std::fs::remove_file(&socket_path)?;
         info!("removed socket file: {}", socket_path);

@@ -9,15 +9,10 @@ use crate::map_manager::MapManager;
 use crate::protocol::{parse_and_validate_request, Request, Response};
 
 /// Run the Unix Domain Socket server at the given path.
-///
-/// Listens for client connections, reads line-delimited JSON requests,
-/// dispatches them to the MapManager, and writes back JSON responses.
-/// If the socket file already exists it is removed before binding.
 pub async fn run_uds_server(
     socket_path: &str,
     map_manager: Arc<Mutex<MapManager>>,
 ) -> Result<()> {
-    // Remove stale socket file if it exists
     if std::path::Path::new(socket_path).exists() {
         log::warn!("removing existing socket file: {}", socket_path);
         std::fs::remove_file(socket_path)?;
@@ -43,11 +38,6 @@ pub async fn run_uds_server(
     }
 }
 
-/// Handle a single client connection.
-///
-/// Reads lines from the stream, parses each as a JSON `Request`,
-/// executes it via the `MapManager`, and writes back a JSON `Response`
-/// followed by a newline.
 async fn handle_client(
     stream: tokio::net::UnixStream,
     map_manager: Arc<Mutex<MapManager>>,
@@ -75,7 +65,6 @@ async fn handle_client(
     Ok(())
 }
 
-/// Parse a JSON line into a `Request` and execute it, returning a `Response`.
 async fn process_request(
     line: &str,
     map_manager: &Arc<Mutex<MapManager>>,
@@ -86,73 +75,45 @@ async fn process_request(
     }
 }
 
-/// Execute a validated `Request` against the `MapManager`.
 async fn execute_request(
     request: Request,
     map_manager: &Arc<Mutex<MapManager>>,
 ) -> Response {
     match request {
-        Request::Add { ip, rate, burst } => {
+        Request::Add { ip, rate, burst, direction } => {
             let mut mgr = map_manager.lock().await;
-            match mgr.add_rule(&ip, rate, burst) {
+            match mgr.add_rule(&ip, rate, burst, direction) {
                 Ok(()) => {
-                    log::info!("added rule: {} rate={} burst={}", ip, rate, burst);
+                    log::info!(
+                        "added rule: {} rate={} burst={} direction={:?}",
+                        ip, rate, burst, direction
+                    );
                     Response {
                         status: "ok".to_string(),
                         data: None,
                         message: None,
                     }
                 }
-                Err(e) => {
-                    let msg = format!("{}", e);
-                    if msg.contains("invalid") || msg.contains("prefix length") {
-                        Response {
-                            status: "error".to_string(),
-                            data: None,
-                            message: Some(format!("invalid CIDR format: {}", ip)),
-                        }
-                    } else {
-                        Response {
-                            status: "error".to_string(),
-                            data: None,
-                            message: Some(msg),
-                        }
-                    }
-                }
+                Err(e) => error_response(e, &ip),
             }
         }
-        Request::Delete { ip } => {
+        Request::Delete { ip, direction } => {
             let mut mgr = map_manager.lock().await;
-            match mgr.delete_rule(&ip) {
+            match mgr.delete_rule(&ip, direction) {
                 Ok(()) => {
-                    log::info!("deleted rule: {}", ip);
+                    log::info!("deleted rule: {} direction={:?}", ip, direction);
                     Response {
                         status: "ok".to_string(),
                         data: None,
                         message: None,
                     }
                 }
-                Err(e) => {
-                    let msg = format!("{}", e);
-                    if msg.contains("invalid") || msg.contains("prefix length") {
-                        Response {
-                            status: "error".to_string(),
-                            data: None,
-                            message: Some(format!("invalid CIDR format: {}", ip)),
-                        }
-                    } else {
-                        Response {
-                            status: "error".to_string(),
-                            data: None,
-                            message: Some(msg),
-                        }
-                    }
-                }
+                Err(e) => error_response(e, &ip),
             }
         }
-        Request::List => {
+        Request::List { direction } => {
             let mgr = map_manager.lock().await;
-            match mgr.list_rules() {
+            match mgr.list_rules(direction) {
                 Ok(rules) => {
                     let data = serde_json::to_value(&rules).unwrap_or(serde_json::Value::Null);
                     Response {
@@ -167,6 +128,23 @@ async fn execute_request(
                     message: Some(format!("{}", e)),
                 },
             }
+        }
+    }
+}
+
+fn error_response(e: anyhow::Error, ip: &str) -> Response {
+    let msg = format!("{}", e);
+    if msg.contains("invalid") || msg.contains("prefix length") {
+        Response {
+            status: "error".to_string(),
+            data: None,
+            message: Some(format!("invalid CIDR format: {}", ip)),
+        }
+    } else {
+        Response {
+            status: "error".to_string(),
+            data: None,
+            message: Some(msg),
         }
     }
 }

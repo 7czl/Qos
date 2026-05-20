@@ -14,65 +14,84 @@ use network_types::{
 };
 use qos_common::{RateLimitConfig, TokenBucketState, TC_ACT_PIPE, TC_ACT_SHOT};
 
-/// LPM Trie storing rate-limit rules keyed by IPv4 address (network byte order).
-/// The aya-ebpf `Key<u32>` wraps the u32 with a prefix_len field, giving us
-/// the standard BPF LPM trie key layout: { prefix_len: u32, addr: u32 }.
-#[map]
-static RULES: LpmTrie<u32, RateLimitConfig> = LpmTrie::with_max_entries(1024, 0);
+// ----- Ingress (download) maps: matched against the source IP of incoming packets -----
 
-/// Per-CPU hash map storing token bucket state keyed by the raw u32 IP address.
-/// Per-CPU avoids lock contention across cores.
 #[map]
-static TOKEN_STATES: PerCpuHashMap<u32, TokenBucketState> =
+static RULES_INGRESS: LpmTrie<u32, RateLimitConfig> = LpmTrie::with_max_entries(1024, 0);
+
+#[map]
+static TOKENS_INGRESS: PerCpuHashMap<u32, TokenBucketState> =
     PerCpuHashMap::with_max_entries(1024, 0);
+
+// ----- Egress (upload) maps: matched against the destination IP of outgoing packets -----
+
+#[map]
+static RULES_EGRESS: LpmTrie<u32, RateLimitConfig> = LpmTrie::with_max_entries(1024, 0);
+
+#[map]
+static TOKENS_EGRESS: PerCpuHashMap<u32, TokenBucketState> =
+    PerCpuHashMap::with_max_entries(1024, 0);
+
+// ----- Classifiers -----
 
 #[classifier]
 pub fn tc_ingress(ctx: TcContext) -> i32 {
-    match try_tc_ingress(&ctx) {
+    match try_ingress(&ctx) {
         Ok(ret) => ret,
         Err(_) => TC_ACT_PIPE, // On error, default to allowing the packet
     }
 }
 
-#[inline(always)]
-fn try_tc_ingress(ctx: &TcContext) -> Result<i32, ()> {
-    // Parse Ethernet header
-    let ethhdr: EthHdr = ctx.load(0).map_err(|_| ())?;
+#[classifier]
+pub fn tc_egress(ctx: TcContext) -> i32 {
+    match try_egress(&ctx) {
+        Ok(ret) => ret,
+        Err(_) => TC_ACT_PIPE, // On error, default to allowing the packet
+    }
+}
 
-    // Only process IPv4 packets; pass everything else through.
-    // Use block expression `{ ... }` to copy the field value out of the packed
-    // struct, avoiding a misaligned reference (EthHdr is #[repr(C, packed)]).
+// ----- Implementation -----
+
+/// Parse Ethernet + IPv4 headers and return (src_addr, dst_addr, packet_len)
+/// in host-meaningful form. Both addresses are kept in network byte order
+/// (big-endian) — that's what we use as the LPM trie key.
+#[inline(always)]
+fn parse_ipv4(ctx: &TcContext) -> Result<Option<(u32, u32, u64)>, ()> {
+    let ethhdr: EthHdr = ctx.load(0).map_err(|_| ())?;
+    // Copy the field out of the packed struct via a block expression to avoid
+    // a misaligned reference.
     let ether_type = { ethhdr.ether_type };
     if ether_type != EtherType::Ipv4 {
-        return Ok(TC_ACT_PIPE);
+        return Ok(None);
     }
 
-    // Parse IPv4 header (also packed — copy fields via block expressions)
     let ipv4hdr: Ipv4Hdr = ctx.load(EthHdr::LEN).map_err(|_| ())?;
-
-    // Source IP in network byte order (big-endian) — used as-is for LPM lookup
     let src_addr = { ipv4hdr.src_addr };
-
-    // Total packet length from IP header (network byte order -> host)
+    let dst_addr = { ipv4hdr.dst_addr };
     let tot_len = { ipv4hdr.tot_len };
     let packet_len = u16::from_be(tot_len) as u64;
 
-    // Look up the source IP in the LPM Trie with a /32 prefix (exact match).
-    // The trie will return the longest matching prefix rule.
-    let lpm_key = Key::new(32, src_addr);
-    let config = match RULES.get(&lpm_key) {
-        Some(cfg) => cfg,
-        None => return Ok(TC_ACT_PIPE), // No matching rule — allow
+    Ok(Some((src_addr, dst_addr, packet_len)))
+}
+
+#[inline(always)]
+fn try_ingress(ctx: &TcContext) -> Result<i32, ()> {
+    let (src_addr, _dst_addr, packet_len) = match parse_ipv4(ctx)? {
+        Some(t) => t,
+        None => return Ok(TC_ACT_PIPE),
     };
 
-    // Get current time for token bucket calculations
+    // Look up the source IP (incoming traffic = "download from this peer").
+    let lpm_key = Key::new(32, src_addr);
+    let config = match RULES_INGRESS.get(&lpm_key) {
+        Some(cfg) => cfg,
+        None => return Ok(TC_ACT_PIPE), // No rule — allow
+    };
+
     let now_ns = unsafe { bpf_ktime_get_ns() };
 
-    // Look up or initialize the per-CPU token bucket state for this IP
-    let state_ptr = TOKEN_STATES.get_ptr_mut(&src_addr);
-    match state_ptr {
+    match TOKENS_INGRESS.get_ptr_mut(&src_addr) {
         Some(ptr) => {
-            // State exists — update in place
             let state = unsafe { &mut *ptr };
             if state.process_packet(config, packet_len, now_ns) {
                 Ok(TC_ACT_PIPE)
@@ -81,19 +100,50 @@ fn try_tc_ingress(ctx: &TcContext) -> Result<i32, ()> {
             }
         }
         None => {
-            // No state yet — initialize a new token bucket
             let mut new_state = TokenBucketState {
                 tokens: config.burst,
                 last_refill_ns: now_ns,
             };
             let allowed = new_state.process_packet(config, packet_len, now_ns);
-            // Insert the new state into the map (BPF_ANY = 0)
-            let _ = TOKEN_STATES.insert(&src_addr, &new_state, 0);
-            if allowed {
+            let _ = TOKENS_INGRESS.insert(&src_addr, &new_state, 0);
+            if allowed { Ok(TC_ACT_PIPE) } else { Ok(TC_ACT_SHOT) }
+        }
+    }
+}
+
+#[inline(always)]
+fn try_egress(ctx: &TcContext) -> Result<i32, ()> {
+    let (_src_addr, dst_addr, packet_len) = match parse_ipv4(ctx)? {
+        Some(t) => t,
+        None => return Ok(TC_ACT_PIPE),
+    };
+
+    // Look up the destination IP (outgoing traffic = "upload to this peer").
+    let lpm_key = Key::new(32, dst_addr);
+    let config = match RULES_EGRESS.get(&lpm_key) {
+        Some(cfg) => cfg,
+        None => return Ok(TC_ACT_PIPE), // No rule — allow
+    };
+
+    let now_ns = unsafe { bpf_ktime_get_ns() };
+
+    match TOKENS_EGRESS.get_ptr_mut(&dst_addr) {
+        Some(ptr) => {
+            let state = unsafe { &mut *ptr };
+            if state.process_packet(config, packet_len, now_ns) {
                 Ok(TC_ACT_PIPE)
             } else {
                 Ok(TC_ACT_SHOT)
             }
+        }
+        None => {
+            let mut new_state = TokenBucketState {
+                tokens: config.burst,
+                last_refill_ns: now_ns,
+            };
+            let allowed = new_state.process_packet(config, packet_len, now_ns);
+            let _ = TOKENS_EGRESS.insert(&dst_addr, &new_state, 0);
+            if allowed { Ok(TC_ACT_PIPE) } else { Ok(TC_ACT_SHOT) }
         }
     }
 }
