@@ -1,0 +1,16 @@
+[
+  {
+    "command": "add",
+    "ip": "10.0.0.0/8",
+    "rate": 1048576,
+    "burst": 2097152,
+    "direction": "download"
+  },
+  {
+    "command": "add",
+    "ip": "1.2.3.4/32",
+    "rate": 524288,
+    "burst": 1048576,
+    "direction": "upload"
+  }
+]

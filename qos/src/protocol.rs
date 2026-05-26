@@ -210,7 +210,8 @@ mod tests {
     #[test]
     fn test_request_add_default_direction() {
         // Backward compatibility: missing "direction" defaults to download
-        let json = r#"{"command": "add", "ip": "192.168.1.0/24", "rate": 1048576, "burst": 2097152}"#;
+        let json =
+            r#"{"command": "add", "ip": "192.168.1.0/24", "rate": 1048576, "burst": 2097152}"#;
         let req: Request = serde_json::from_str(json).unwrap();
         assert_eq!(
             req,
@@ -294,7 +295,11 @@ mod tests {
     fn test_validate_unknown_command_returns_error() {
         let resp = parse_and_validate_request(r#"{"command": "restart"}"#).unwrap_err();
         assert_eq!(resp.status, "error");
-        assert!(resp.message.as_ref().unwrap().contains("unknown command: restart"));
+        assert!(resp
+            .message
+            .as_ref()
+            .unwrap()
+            .contains("unknown command: restart"));
     }
 
     #[test]

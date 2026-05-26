@@ -110,8 +110,7 @@ async fn main() -> anyhow::Result<()> {
     )?;
     let map_manager = Arc::new(Mutex::new(MapManager::new(rules_ingress, rules_egress)));
 
-    let mut sigterm =
-        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
 
     let socket_path = opt.socket_path.clone();
 
@@ -160,9 +159,8 @@ mod tests {
 
     #[test]
     fn test_socket_path_custom() {
-        let opt =
-            Opt::try_parse_from(["qos", "--iface", "lo", "--socket-path", "/tmp/qos.sock"])
-                .unwrap();
+        let opt = Opt::try_parse_from(["qos", "--iface", "lo", "--socket-path", "/tmp/qos.sock"])
+            .unwrap();
         assert_eq!(opt.iface, "lo");
         assert_eq!(opt.socket_path, "/tmp/qos.sock");
     }

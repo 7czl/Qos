@@ -9,10 +9,7 @@ use crate::map_manager::MapManager;
 use crate::protocol::{parse_and_validate_request, Request, Response};
 
 /// Run the Unix Domain Socket server at the given path.
-pub async fn run_uds_server(
-    socket_path: &str,
-    map_manager: Arc<Mutex<MapManager>>,
-) -> Result<()> {
+pub async fn run_uds_server(socket_path: &str, map_manager: Arc<Mutex<MapManager>>) -> Result<()> {
     if std::path::Path::new(socket_path).exists() {
         log::warn!("removing existing socket file: {}", socket_path);
         std::fs::remove_file(socket_path)?;
@@ -65,28 +62,30 @@ async fn handle_client(
     Ok(())
 }
 
-async fn process_request(
-    line: &str,
-    map_manager: &Arc<Mutex<MapManager>>,
-) -> Response {
+async fn process_request(line: &str, map_manager: &Arc<Mutex<MapManager>>) -> Response {
     match parse_and_validate_request(line) {
         Ok(request) => execute_request(request, map_manager).await,
         Err(error_response) => error_response,
     }
 }
 
-async fn execute_request(
-    request: Request,
-    map_manager: &Arc<Mutex<MapManager>>,
-) -> Response {
+async fn execute_request(request: Request, map_manager: &Arc<Mutex<MapManager>>) -> Response {
     match request {
-        Request::Add { ip, rate, burst, direction } => {
+        Request::Add {
+            ip,
+            rate,
+            burst,
+            direction,
+        } => {
             let mut mgr = map_manager.lock().await;
             match mgr.add_rule(&ip, rate, burst, direction) {
                 Ok(()) => {
                     log::info!(
                         "added rule: {} rate={} burst={} direction={:?}",
-                        ip, rate, burst, direction
+                        ip,
+                        rate,
+                        burst,
+                        direction
                     );
                     Response {
                         status: "ok".to_string(),

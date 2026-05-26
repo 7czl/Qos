@@ -15,7 +15,9 @@ use network_types::{
 // `bpf_spin_lock` here refers to the *type* re-exported by qos-common; the
 // function symbol of the same name imported from `aya_ebpf::helpers` lives in
 // the value namespace, so the two coexist without a conflict.
-use qos_common::{bpf_spin_lock as BpfSpinLock, RateLimitConfig, TokenBucketState, TC_ACT_PIPE, TC_ACT_SHOT};
+use qos_common::{
+    bpf_spin_lock as BpfSpinLock, RateLimitConfig, TokenBucketState, TC_ACT_PIPE, TC_ACT_SHOT,
+};
 
 /// One second in nanoseconds. Mirrors `qos_common::NANOS_PER_SEC` so the
 /// inlined refill arithmetic inside the spin-locked critical section stays

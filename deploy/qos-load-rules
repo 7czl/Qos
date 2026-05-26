@@ -1,0 +1,83 @@
+#!/usr/bin/env python3
+"""Load persistent QoS rules from a JSON file via the UDS control socket.
+
+Reads a JSON array of rule objects (same format as the `add` command sent
+over UDS) and forwards each one to the running qos service.
+
+Usage:
+    qos-load-rules [/path/to/rules.json]
+
+Environment:
+    QOS_SOCK   UDS path (default: /var/run/qos.sock)
+"""
+import json
+import os
+import socket
+import sys
+import time
+
+RULES_FILE = sys.argv[1] if len(sys.argv) > 1 else "/etc/qos/rules.json"
+SOCK_PATH = os.environ.get("QOS_SOCK", "/var/run/qos.sock")
+WAIT_TIMEOUT_S = 15
+
+
+def wait_for_socket(path: str, timeout_s: float) -> bool:
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if os.path.exists(path):
+            return True
+        time.sleep(0.2)
+    return False
+
+
+def main() -> int:
+    if not os.path.exists(RULES_FILE):
+        print(f"[qos-load-rules] no rules file at {RULES_FILE}, nothing to do",
+              file=sys.stderr)
+        return 0
+
+    with open(RULES_FILE) as f:
+        rules = json.load(f)
+
+    if not isinstance(rules, list):
+        print(f"[qos-load-rules] {RULES_FILE} must contain a JSON array",
+              file=sys.stderr)
+        return 1
+
+    if not wait_for_socket(SOCK_PATH, WAIT_TIMEOUT_S):
+        print(f"[qos-load-rules] timed out waiting for {SOCK_PATH}",
+              file=sys.stderr)
+        return 1
+
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.connect(SOCK_PATH)
+    rw = s.makefile("rwb", buffering=0)
+
+    failures = 0
+    for rule in rules:
+        line = (json.dumps(rule) + "\n").encode()
+        rw.write(line)
+        resp_line = rw.readline()
+        if not resp_line:
+            print(f"[qos-load-rules] connection closed unexpectedly", file=sys.stderr)
+            failures += 1
+            break
+        resp = json.loads(resp_line)
+        ip = rule.get("ip", "<list>")
+        direction = rule.get("direction", "download")
+        status = resp.get("status")
+        msg = resp.get("message", "")
+        if status == "ok":
+            print(f"[qos-load-rules] OK    {direction:>8}  {ip}", file=sys.stderr)
+        else:
+            print(f"[qos-load-rules] FAIL  {direction:>8}  {ip}  -> {msg}",
+                  file=sys.stderr)
+            failures += 1
+
+    rw.close()
+    s.close()
+    return 1 if failures else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

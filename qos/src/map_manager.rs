@@ -79,8 +79,14 @@ impl MapManager {
     pub fn list_rules(&self, filter: Option<Direction>) -> Result<Vec<RuleInfo>> {
         let mut rules = Vec::new();
 
-        let want_ingress = matches!(filter, None | Some(Direction::Download) | Some(Direction::Both));
-        let want_egress = matches!(filter, None | Some(Direction::Upload) | Some(Direction::Both));
+        let want_ingress = matches!(
+            filter,
+            None | Some(Direction::Download) | Some(Direction::Both)
+        );
+        let want_egress = matches!(
+            filter,
+            None | Some(Direction::Upload) | Some(Direction::Both)
+        );
 
         if want_ingress {
             Self::collect_into(&self.ingress, Direction::Download, &mut rules)?;

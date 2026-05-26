@@ -1,0 +1,42 @@
+[Unit]
+Description=QoS - eBPF Rate Limiter (upload + download)
+Documentation=https://github.com/travis/QoS
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+# Clean up any stale TC filters from previous runs before starting.
+ExecStartPre=-/usr/sbin/tc qdisc del dev ens5 clsact
+ExecStart=/usr/local/bin/qos --iface ens5 --socket-path /var/run/qos.sock
+
+# Log level: info by default. Change to debug/warn/error as needed.
+Environment=RUST_LOG=info
+
+# Run as root (required for eBPF)
+User=root
+Group=root
+
+# Cleanup: remove the UDS socket file on stop. The eBPF programs and
+# TC filters detach automatically when the process exits.
+ExecStopPost=-/usr/bin/rm -f /var/run/qos.sock
+
+# Restart policy
+Restart=on-failure
+RestartSec=5
+
+# eBPF / kernel capabilities required to load and attach TC programs.
+# Note: when running as root, AmbientCapabilities is not strictly needed,
+# but CapabilityBoundingSet limits what root can do — useful as a safety net.
+CapabilityBoundingSet=CAP_BPF CAP_NET_ADMIN CAP_SYS_ADMIN CAP_PERFMON
+
+# eBPF maps require locked memory (pinning).
+LimitMEMLOCK=infinity
+
+# Sandboxing — kept minimal because eBPF + TC need broad kernel access.
+# Do NOT enable ProtectSystem=strict here: it can interact poorly with
+# /usr/local/bin on some hardened distributions and cause EACCES on exec.
+NoNewPrivileges=no
+
+[Install]
+WantedBy=multi-user.target

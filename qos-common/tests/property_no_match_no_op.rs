@@ -192,11 +192,10 @@ fn rules_strategy() -> impl Strategy<Value = LpmTrieModel> {
 /// by `rules`. Implemented as `prop_filter` over the joint space, exactly
 /// as the design document specifies.
 fn rules_and_unmatched_ip_strategy() -> impl Strategy<Value = (LpmTrieModel, u32)> {
-    (rules_strategy(), any::<u32>())
-        .prop_filter(
-            "ip must not be covered by any rule in the LPM trie model",
-            |(rules, ip)| !rules.covers(*ip),
-        )
+    (rules_strategy(), any::<u32>()).prop_filter(
+        "ip must not be covered by any rule in the LPM trie model",
+        |(rules, ip)| !rules.covers(*ip),
+    )
 }
 
 /// Pre-existing entry in the tokens map. Property B verifies that these
@@ -216,8 +215,7 @@ fn token_entry_strategy() -> impl Strategy<Value = (u32, TokenBucketState)> {
 }
 
 fn tokens_strategy() -> impl Strategy<Value = HashMap<u32, TokenBucketState>> {
-    proptest::collection::vec(token_entry_strategy(), 0..16)
-        .prop_map(|v| v.into_iter().collect())
+    proptest::collection::vec(token_entry_strategy(), 0..16).prop_map(|v| v.into_iter().collect())
 }
 
 fn direction_strategy() -> impl Strategy<Value = Direction> {

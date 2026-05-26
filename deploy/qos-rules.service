@@ -1,0 +1,16 @@
+[Unit]
+Description=Load persistent QoS rules
+Documentation=https://github.com/travis/QoS
+After=qos.service
+Requires=qos.service
+ConditionPathExists=/etc/qos/rules.json
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/qos-load-rules /etc/qos/rules.json
+RemainAfterExit=yes
+User=root
+Group=root
+
+[Install]
+WantedBy=multi-user.target
