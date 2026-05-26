@@ -16,9 +16,16 @@ qos-common = { path = "../qos-common" }
 [profile.dev]
 opt-level = 2
 overflow-checks = false
+debug = 2
 
 [profile.release]
 lto = true
 panic = "abort"
 opt-level = 2
 overflow-checks = false
+# Keep DWARF/debug info so bpf-linker can lower it to BTF. The kernel
+# verifier requires BTF on any map that embeds a `bpf_spin_lock` field
+# (TOKENS_INGRESS / TOKENS_EGRESS), otherwise BPF_PROG_LOAD fails with
+# "map 'TOKENS_*' has to have BTF in order to use bpf_spin_lock".
+debug = 2
+strip = "none"
