@@ -9,6 +9,14 @@ user = ["aya"]
 
 [dependencies]
 aya = { version = "0.13", optional = true }
+# `aya-ebpf-bindings` is a `no_std` crate that re-exports the kernel `bpf_spin_lock`
+# struct (a single `__u32` value) generated from the kernel UAPI headers. We pull
+# it in unconditionally so that:
+#  * the `qos-ebpf` no_std build (BPF target) sees the exact same struct layout
+#    that the kernel verifier expects to find inside a `BPF_MAP_TYPE_HASH` value,
+#  * the `qos` userspace build (host target, `feature = "user"`) reuses the same
+#    POD-compatible layout when interpreting the bucket entries returned by aya.
+aya-ebpf-bindings = "0.1"
 
 [dev-dependencies]
 proptest = "1"

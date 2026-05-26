@@ -1,5 +1,16 @@
 #![no_std]
 
+/// Re-export the kernel `bpf_spin_lock` struct from `aya-ebpf-bindings` so it is
+/// referred to under a single canonical path throughout the workspace.
+///
+/// The struct is a single `__u32` value as defined in the kernel UAPI headers
+/// (`linux/bpf.h`); we never read or write its inner field directly. The eBPF
+/// data path interacts with it exclusively through the `bpf_spin_lock` /
+/// `bpf_spin_unlock` helpers, and the userspace side treats it as opaque
+/// padding when iterating over `TokenBucketState` values pulled out of a BPF
+/// `HashMap`.
+pub use aya_ebpf_bindings::bindings::bpf_spin_lock;
+
 /// TC action: pass the packet to the next filter/action in the chain.
 pub const TC_ACT_PIPE: i32 = 0;
 /// TC action: drop the packet.
@@ -41,15 +52,62 @@ pub struct RateLimitConfig {
     pub burst: u64,
 }
 
-/// Per-CPU token bucket state.
+/// Token bucket state shared across all CPUs for a single matched IPv4 address.
 ///
-/// Stored in a Per-CPU Hash Map keyed by the matched IPv4 address.
-/// `tokens` is the current number of available tokens (bytes).
-/// `last_refill_ns` is the timestamp of the last refill in nanoseconds
-/// (from `bpf_ktime_get_ns`).
+/// Stored as the value of a `BPF_MAP_TYPE_HASH` map keyed by the matched IPv4
+/// address (source IP for ingress, destination IP for egress). A single entry
+/// is shared across every CPU that processes packets for the same key, and
+/// concurrent updates are serialized by the embedded [`bpf_spin_lock`].
+///
+/// # Memory layout (`#[repr(C)]`, LP64 ABI)
+///
+/// | Offset | Size | Field                      |
+/// |-------:|-----:|----------------------------|
+/// | 0      | 4    | `lock: bpf_spin_lock`      |
+/// | 4      | 4    | (compiler padding)         |
+/// | 8      | 8    | `tokens: u64`              |
+/// | 16     | 8    | `last_refill_ns: u64`      |
+///
+/// `size_of::<TokenBucketState>() == 24`, `align_of == 8`. The `lock` field is
+/// placed at offset 0 because the verifier requires `bpf_spin_lock` to live at
+/// the top level of a map value (no nesting, exactly one per value, 4-byte
+/// aligned).
+///
+/// # `bpf_spin_lock` usage constraints
+///
+/// The kernel BPF verifier imposes the following hard rules on the `lock`
+/// field; the eBPF data path in `qos-ebpf` enforces them, and any future
+/// callers must do the same:
+///
+/// * **Acquire / release with helpers only.** The lock MUST be acquired with
+///   `bpf_spin_lock(&state.lock)` and released with `bpf_spin_unlock(...)`.
+///   The inner `lock.val: u32` MUST NEVER be loaded or stored directly.
+/// * **No helpers or BPF-to-BPF calls inside the critical section.** While the
+///   lock is held, the program may only execute pure arithmetic, comparisons,
+///   branches, and reads/writes of `tokens` / `last_refill_ns`. Helpers such
+///   as `bpf_ktime_get_ns()` MUST be sampled outside the lock and passed in.
+/// * **Single lock at a time.** The verifier rejects programs that attempt to
+///   hold two `bpf_spin_lock`s simultaneously.
+/// * **Every successful acquire must release on every path.** Allow, drop, and
+///   any early-return path inside the critical section MUST converge on a
+///   single `bpf_spin_unlock` site before returning a TC action.
+///
+/// The pure arithmetic helpers [`TokenBucketState::refill_tokens`] and
+/// [`TokenBucketState::process_packet`] do not touch the `lock` field; they
+/// remain available for unit / property testing the algorithmic invariants
+/// in userspace, where the lock can be modeled by a `std::sync::Mutex`.
+///
+/// `tokens` is the current number of available tokens (bytes); `last_refill_ns`
+/// is the timestamp of the last refill in nanoseconds (from
+/// `bpf_ktime_get_ns`).
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct TokenBucketState {
+    /// In-kernel spin lock that serializes the read–refill–consume–writeback
+    /// sequence on this entry across all CPUs. Must remain the first field
+    /// (offset 0) and 4-byte aligned to satisfy the BPF verifier's layout
+    /// requirements for `bpf_spin_lock` inside a `BPF_MAP_TYPE_HASH` value.
+    pub lock: bpf_spin_lock,
     pub tokens: u64,
     pub last_refill_ns: u64,
 }
@@ -147,6 +205,57 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
 
+    /// Zero-initialized `bpf_spin_lock` value used to populate the `lock`
+    /// field in test fixtures. The pure arithmetic methods under test
+    /// (`refill_tokens`, `process_packet`) never touch `lock`, so this is a
+    /// safe default for unit / property tests running in userspace.
+    const ZERO_LOCK: bpf_spin_lock = bpf_spin_lock { val: 0 };
+
+    // Feature: ebpf-rate-limiter-spinlock-accuracy
+    // **Validates: Requirements 2.1**
+    //
+    // The BPF verifier requires that a `bpf_spin_lock` field embedded in a
+    // `BPF_MAP_TYPE_HASH` value:
+    //   * lives at the top level of the value (no nesting),
+    //   * is at least 4-byte aligned,
+    //   * occupies a fixed offset known at load time.
+    //
+    // We pin the `lock` field to offset 0 by declaration order under
+    // `#[repr(C)]`. The trailing `tokens` and `last_refill_ns` `u64` fields
+    // then introduce 4 bytes of natural padding after `lock`, yielding a
+    // 24-byte value with 8-byte alignment on every Tier-1 LP64 target.
+    //
+    // This test guards against accidental field reordering or attribute
+    // changes that would silently break the verifier contract.
+    #[test]
+    fn token_bucket_state_layout() {
+        assert_eq!(
+            core::mem::offset_of!(TokenBucketState, lock),
+            0,
+            "`lock` must be the first field so the verifier can locate it at \
+             a fixed offset within the BPF_MAP_TYPE_HASH value"
+        );
+
+        let align = core::mem::align_of::<TokenBucketState>();
+        assert!(
+            align >= 4,
+            "TokenBucketState alignment ({align}) must be >= 4 to satisfy \
+             bpf_spin_lock's 4-byte alignment requirement"
+        );
+        assert_eq!(
+            align % 4,
+            0,
+            "TokenBucketState alignment ({align}) must be a multiple of 4"
+        );
+
+        assert_eq!(
+            core::mem::size_of::<TokenBucketState>(),
+            24,
+            "TokenBucketState must be exactly 24 bytes (4 lock + 4 pad + 8 \
+             tokens + 8 last_refill_ns) to match the userspace/kernel ABI"
+        );
+    }
+
     // Feature: ebpf-download-rate-limiter, Property 1: 令牌消耗决策正确性
     // **Validates: Requirements 2.2, 2.3**
     //
@@ -173,6 +282,7 @@ mod tests {
             };
 
             let mut state = TokenBucketState {
+                lock: ZERO_LOCK,
                 tokens,
                 last_refill_ns,
             };
@@ -220,6 +330,7 @@ mod tests {
             let now_ns = last_refill_ns + elapsed_ns;
 
             let mut state = TokenBucketState {
+                lock: ZERO_LOCK,
                 tokens: current_tokens,
                 last_refill_ns,
             };
@@ -325,6 +436,7 @@ mod tests {
             let initial_tokens = core::cmp::min(initial_tokens, burst);
 
             let mut state = TokenBucketState {
+                lock: ZERO_LOCK,
                 tokens: initial_tokens,
                 last_refill_ns: 1_000_000_000u64, // arbitrary start time
             };

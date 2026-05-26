@@ -50,31 +50,53 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Attach the ingress (download) classifier.
+    let ingress_prog_name = "tc_ingress";
     let ingress_prog: &mut SchedClassifier = bpf
-        .program_mut("tc_ingress")
+        .program_mut(ingress_prog_name)
         .context("tc_ingress program not found in eBPF object")?
         .try_into()?;
-    ingress_prog.load()?;
-    ingress_prog
-        .attach(&opt.iface, TcAttachType::Ingress)
-        .context(format!(
-            "failed to attach TC ingress to '{}' — does the interface exist?",
-            opt.iface
-        ))?;
+    // Surface the full anyhow cause chain (incl. eBPF verifier text) on
+    // failure, then propagate so `main` exits non-zero (Requirement 2.5).
+    match ingress_prog.load() {
+        Ok(()) => {}
+        Err(err) => {
+            log::error!("failed to load {ingress_prog_name}: {err:#}");
+            return Err(anyhow::Error::from(err)
+                .context(format!("eBPF verifier rejected {ingress_prog_name}")));
+        }
+    }
+    match ingress_prog.attach(&opt.iface, TcAttachType::Ingress) {
+        Ok(_) => {}
+        Err(err) => {
+            log::error!("failed to load {ingress_prog_name}: {err:#}");
+            return Err(anyhow::Error::from(err)
+                .context(format!("eBPF verifier rejected {ingress_prog_name}")));
+        }
+    }
     info!("attached tc_ingress (download limiter) to {}", opt.iface);
 
     // Attach the egress (upload) classifier.
+    let egress_prog_name = "tc_egress";
     let egress_prog: &mut SchedClassifier = bpf
-        .program_mut("tc_egress")
+        .program_mut(egress_prog_name)
         .context("tc_egress program not found in eBPF object")?
         .try_into()?;
-    egress_prog.load()?;
-    egress_prog
-        .attach(&opt.iface, TcAttachType::Egress)
-        .context(format!(
-            "failed to attach TC egress to '{}'",
-            opt.iface
-        ))?;
+    match egress_prog.load() {
+        Ok(()) => {}
+        Err(err) => {
+            log::error!("failed to load {egress_prog_name}: {err:#}");
+            return Err(anyhow::Error::from(err)
+                .context(format!("eBPF verifier rejected {egress_prog_name}")));
+        }
+    }
+    match egress_prog.attach(&opt.iface, TcAttachType::Egress) {
+        Ok(_) => {}
+        Err(err) => {
+            log::error!("failed to load {egress_prog_name}: {err:#}");
+            return Err(anyhow::Error::from(err)
+                .context(format!("eBPF verifier rejected {egress_prog_name}")));
+        }
+    }
     info!("attached tc_egress (upload limiter) to {}", opt.iface);
 
     // Take both rules maps and hand them to the manager.

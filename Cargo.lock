@@ -736,6 +736,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "aya",
+ "aya-ebpf-bindings",
  "proptest",
  "serde",
  "serde_json",
